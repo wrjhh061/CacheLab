@@ -49,17 +49,70 @@ static void usage(const char *prog)
 }
 
 /*
- * TODO: Simulate one data access at addr.
+ * access_cache - Simulate one data access at addr.
  * Extract the set index and tag, then update the cache state and counters
  * for a hit, a miss, or a miss with an LRU eviction. An eviction also counts
- * as a miss. Handle s == 0 and s + b == 64 without shifting by 64 bits.
+ * as a miss. s == 0 and s + b == 64 are handled without shifting by 64 bits.
  * If verbose is set, append " hit", " miss", or " miss eviction" without
- * a newline. replay() prints the trace entry and the trailing newline.
+ * a newline; replay() prints the trace entry and the trailing newline.
  */
 static void access_cache(uint64_t addr)
 {
-    (void)addr;
-    (void)tick;
+    uint64_t tag;
+    uint64_t set_mask;
+    size_t set;
+    line_t *lines;
+    int i;
+    int victim = -1;
+
+    /*
+     * tag = the bits above the set index; set = the s bits above the
+     * block offset. When s + b == 64 the tag field is empty: shifting a
+     * uint64_t by 64 is undefined, so that case is handled separately.
+     */
+    tag = (s + b == 64) ? 0 : (addr >> (s + b));
+    set_mask = ((uint64_t)1 << s) - 1;
+    set = (size_t)((addr >> b) & set_mask);
+    lines = &cache[set * (size_t)E];
+
+    tick++;
+
+    /* Hit: refresh the line's LRU stamp and stop. */
+    for (i = 0; i < E; i++) {
+        if (lines[i].valid && lines[i].tag == tag) {
+            lines[i].last_used = tick;
+            hits++;
+            if (verbose)
+                printf(" hit");
+            return;
+        }
+    }
+
+    /* Miss: prefer the lowest-numbered invalid line, else evict the LRU one. */
+    misses++;
+    for (i = 0; i < E; i++) {
+        if (!lines[i].valid) {
+            victim = i;
+            break;
+        }
+    }
+    if (victim < 0) {
+        victim = 0;
+        for (i = 1; i < E; i++) {
+            if (lines[i].last_used < lines[victim].last_used)
+                victim = i;
+        }
+        evictions++;
+        if (verbose)
+            printf(" miss eviction");
+    } else {
+        if (verbose)
+            printf(" miss");
+    }
+
+    lines[victim].valid = 1;
+    lines[victim].tag = tag;
+    lines[victim].last_used = tick;
 }
 
 /* replay - run every data access in the trace through the cache */
